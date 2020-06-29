@@ -1,0 +1,218 @@
+step1
+
+source /home/hadoop/classicmodels/classicmodels.txt
+
+
+
+step2
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table products --m 1 --target-dir hdfs:///user/hadoop/classicmodels/products
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table orders --m 1 --target-dir hdfs:///user/hadoop/classicmodels/orders
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table orderdetails --m 1 --target-dir hdfs:///user/hadoop/classicmodels/orderdetails
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table employees --m 1 --target-dir hdfs:///user/hadoop/classicmodels/employees
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table customers --m 1 --target-dir hdfs:///user/hadoop/classicmodels/customers
+
+sqoop import --connect jdbc:mysql://localhost.localdomain/classicmodels --username root --password hadoop --table payments --m 1 --target-dir hdfs:///user/hadoop/classicmodels/payments
+
+
+step3
+
+CREATE  external TABLE `products` (
+`productCode` string,
+`productName` string,
+`productLine` string,
+`productScale` string,
+`productVendor` string,o
+`productDescription` string,
+`quantityInStock` int,
+`buyPrice` float,
+`MSRP` float
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/products' into table products;
+
+
+CREATE external TABLE `orders` (
+`orderNumber` int,
+`orderDate` date,
+`requiredDate` date,
+`shippedDate` date,
+`status` string,
+`comments` string,
+`customerNumber` int
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/orders' into table orders;
+
+
+CREATE external TABLE `orderdetails` (
+`orderNumber` int,
+`productCode` string,
+`quantityOrdered` int,
+`priceEach` float,
+`orderLineNumber` int
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/orderdetails' into table orderdetails;
+
+
+CREATE external TABLE `employees` (
+`employeeNumber` int,
+`lastName` string,
+`firstName` string,
+`extension` string,
+`email` string,
+`officeCode` string,
+`reportsTo` int,
+`jobTitle` string
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/employees' into table employees;
+
+
+CREATE external TABLE `customers` (
+`customerNumber` int,
+`customerName` string,
+`contactLastName` string,
+`contactFirstName` string,
+`phone` string,
+`addressLine1` string,
+`addressLine2` string,
+`city` string,
+`state` string,
+`postalCode` string,
+`country` string,
+`salesRepEmployeeNumber` int,
+`creditLimit` float
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/customers' into table customers;
+
+
+CREATE external TABLE `payments` (
+`customerNumber` int,
+`checkNumber` string,
+`paymentDate` date,
+`amount` float
+)row format delimited fields terminated by ','
+lines terminated by '\n';
+load data inpath 'classicmodels/payments' into table payments;
+
+
+
+step4
+
+CREATE TABLE OrderCustomerDetail
+(orderNumber int,
+orderDate date,
+shippedDate date,
+customerNumber int,
+customerName string,
+orderAmount float,
+status string)PARTITIONED BY (OrderYear string, OrderMonth string)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+STORED AS TEXTFILE;
+
+insert into table OrderCustomerDetail partition(OrderYear, OrderMonth)
+select
+orders.orderNumber,
+orders.orderDate,
+orders.shippedDate,
+orders.customerNumber,
+customers.customerName,
+(orderdetails.quantityOrdered*orderdetails.priceEach) as orderAmount,
+orders.status,
+substr(orders.orderDate,1,4) OrderYear,
+substr(orders.orderDate,1,7) OrderMonth
+from orders, orderdetails, customers
+where 
+orders.orderNumber=orderdetails.orderNumber and 
+orders.customerNumber=customers.customerNumber
+
+
+CREATE TABLE OrderProductDetail
+(orderNumber int,
+orderDate date,
+productCode string,
+productName string,
+productLine string,
+orderAmount float)PARTITIONED BY (OrderYear string, OrderMonth string)
+ROW FORMAT DELIMITED FIELDS TERMINATED BY ','
+STORED AS TEXTFILE;
+
+insert into table OrderProductDetail partition(OrderYear, OrderMonth)
+select
+orders.orderNumber,
+orders.orderDate,
+orderdetails.productCode,
+products.productName,
+products.productLine,
+(orderdetails.quantityOrdered*orderdetails.priceEach) as orderAmount,
+substr(orders.orderDate,1,4) OrderYear,
+substr(orders.orderDate,1,7) OrderMonth
+from orders, orderdetails, products
+where 
+orders.orderNumber=orderdetails.orderNumber and orderdetails.productCode=products.productCode
+
+
+
+step5
+
+create table SalesSummary 
+(SalesRepCode string,
+SalesRepName string,
+OrderYear string,
+month string,
+sales float);
+
+insert into table SalesSummary 
+SELECT a.salesrepemployeenumber, b.firstname, c.OrderYear, substr(c.OrderMonth,1,7) as month, d.amount
+FROM customers a
+inner join employees b
+on a.salesrepemployeenumber=b.employeenumber
+inner join OrderCustomerDetail c
+on a.customernumber=c.customernumber
+inner join payments d
+on a.customernumber=d.customernumber;
+
+select SalesRepName, sales from SalesSummary group by SalesRepCode,month;
+
+
+create table ProductSummary 
+(ProductCode string,
+ProductName string,
+ProductLine string,
+OrderYear string,
+month string,
+sum float);
+
+insert into table ProductSummary
+SELECT a.ProductCode, a.ProductName, a.ProductLine, a.OrderYear, substr(a.OrderMonth,1,7) as month, c.sum
+FROM OrderProductDetail a
+inner join 
+(SELECT ProductCode, sum(OrderAmount) as sum
+FROM OrderProductDetail b
+GROUP BY ProductCode)c
+on a.productcode=c.productcode;
+
+select productcode, sum(sum) from productsummary group by productcode,month;
+
+
+create table CustomerSummary 
+(CustomerNumber int,
+CustomerName string,
+OrderAmount float,
+PaymentAmount float);
+
+insert into table CustomerSummary
+SELECT a.CustomerNumber, a.CustomerName, a.OrderAmount, b.Amount
+from OrderCustomerDetail a
+inner join
+payments b
+on a.CustomerNumber=b.CustomerNumber;
+
+select CustomerName, sum(OrderAmount), sum(PaymentAmount) from CustomerSummary group by CustomerName;
